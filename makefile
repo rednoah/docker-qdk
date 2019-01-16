@@ -1,3 +1,3 @@
-help:
+build:
 	docker build --rm -t docker-qdk .
-	docker run -it -v ${PWD}:/src docker-qdk -help
+	docker run -it docker-qdk -help
