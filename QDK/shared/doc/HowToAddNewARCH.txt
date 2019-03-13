@@ -1,0 +1,71 @@
+Add New Architecture
+==============================================================================================================
+step 1:  
+	Add new architecture folder(example: x86_ce53xx) on the template folder(Path: "./QDK/template")
+
+step 2:  
+	edit template's qpkg.cfg(default qpkg.cfg), Add new Architecture rules on the qpkg.cfg(Path: "./QDK/template/qpkg.cfg")
+example:
+
+	# Location of files specific to x86 (ce53xx) packages.
+	#QDK_DATA_DIR_X86_CE53XX="x86_ce53xx"
+
+step 3:
+	open qbuild script (Path: "./QDK/bin/qbuild")
+
+step 4:
+	Add new architecture rule for "check_deprecated_definitions" function.
+example:
+
+	if [ -n "$QDK_SRC_X86_CE53XX" ]; then
+	   [ -z "$QDK_DATA_DIR_X86_CE53XX" ] && QDK_DATA_DIR_X86_CE53XX="$QDK_SRC_X86_CE53XX"
+	   QDK_SRC_X86_CE53XX=
+	   warn_msg "QDK_SRC_X86_CE53XX: deprecated definition"
+	fi
+
+step 5:
+	Add new architecutre rule for "add_qpkg_header" function.
+example:
+
+	case "$arch" in
+	.....		
+		x86_ce53xx)
+			cpu_arch="i.86\|x86_64"
+			;;
+	.....
+	esac
+
+step 6: 
+	Add new architecture rule for "assign_defaults" function
+example:
+
+	if [ -z "$QDK_BUILD_ARCH" ]; then
+		.....
+
+		is_empty_dir "${QDK_DATA_DIR_X86_CE53XX:-x86_ce53xx}" || add_arch "x86_ce53xx"
+	
+		.....	
+	fi
+step 7:
+	Add new architecture rule for "traverse_and_build" function
+example:
+
+		case "$arch" in
+			....
+			
+			x86_ce53xx)
+				arch_dir="${QDK_DATA_DIR_X86_CE53XX:-x86_ce53xx}"
+				;;
+			....
+		esac
+
+step 8:
+	Add new architecture name for "help" function
+
+example:
+
+	--build-arch ARCH
+	Build QPKG for specified ARCH (supported values: arm-x09, arm-x19, x86, "x86_ce53xx",
+	and x86_64). Only one architecture per option, but you can repeat the
+	option on the command line to add multiple architectures.
+
