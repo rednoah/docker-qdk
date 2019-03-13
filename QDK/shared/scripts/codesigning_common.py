@@ -19,12 +19,7 @@ FOLDER_ERROR = 22
 
 DB_NAME = "nas_sign.db"
 DB_SIG_NAME = "nas_sign.sig"
-KEY_SIG_NAME = "pub_key.sig"
-
-if TOOL == "openssl":
-    KEY_NAME = "pub_key.pem"
-elif TOOL == "gpg":
-    KEY_NAME = "pub_key.gpg"
+CERT_NAME = "cert.pem"
 
 def get_token():
     if "QNAP_CODESIGNING_TOKEN" not in os.environ:
@@ -57,19 +52,28 @@ def check_args(kwargs):
     if "csv" in kwargs and not os.path.isfile(kwargs["csv"]):
         logging.error("cannot find csv file")
         sys.exit(1)
-    if "rootkeyfile" in kwargs and kwargs["rootkeyfile"] == "":
-        logging.error("parameter rootkeyfile not provided")
+    if "ca_cert" in kwargs and kwargs["ca_cert"] == "":
+        logging.error("parameter ca_cert not provided")
         sys.exit(1)
     if "tgzfile" in kwargs and not os.path.isfile(kwargs["tgzfile"]):
         logging.error("cannot find tgz file %s" % kwargs["tgzfile"])
         sys.exit(1)
     if "version" in kwargs and kwargs["version"] == "":
-        logging.error("firmware version number not provided")
+        logging.error("version number not provided")
         sys.exit(1)
+    if "key_type" not in kwargs:
+        kwargs["key_type"] = "qpkg"
 
 def check_cwd(kwargs):
     if not os.path.isdir(kwargs["cwd"]):
         logging.error("cwd %s is not a directory" % kwargs["cwd"])
+        sys.exit(1)
+
+def check_build(kwargs):
+    build_path = os.path.join(kwargs["cwd"],kwargs["buildpath"])
+    if not os.path.isdir(build_path):
+        logging.error("buildpath %s is not a directory" % kwargs["buildpath"])
+        sys.exit(1)
 
 def create_db(db):
     sql_create_signature_table = """
@@ -78,30 +82,28 @@ def create_db(db):
             Path TEXT NOT NULL,
             Package TEXT,
             Signature BLOB,
-            PublicKeyID INT
+            CertID INT
         );
     """
     sql_add_path_index = "CREATE INDEX SignedFilePath ON SignedFile (Path);"
     if TOOL == "openssl": 
         sql_create_key_table = """
-            CREATE TABLE PublicKey (
-                KeyID INTEGER PRIMARY KEY,
+            CREATE TABLE Certificate (
+                CertID INTEGER PRIMARY KEY,
                 Type TEXT NOT NULL,
-                Version TEXT,
                 QpkgName TEXT,
-                Key TEXT NOT NULL,
-                Signature BLOB NOT NULL
+                Cert TEXT NOT NULL,
+                DigitalSignature TEXT
             );
         """
     elif TOOL == "gpg":
         sql_create_key_table = """
-            CREATE TABLE PublicKey (
-                KeyID INTEGER PRIMARY KEY,
+            CREATE TABLE Certificate (
+                CertID INTEGER PRIMARY KEY,
                 Type TEXT NOT NULL,
-                Version TEXT,
                 QpkgName TEXT,
-                Key BLOB NOT NULL,
-                Signature BLOB NOT NULL
+                Cert BLOB NOT NULL,
+                DigitalSignature TEXT
             );
         """
 
@@ -134,10 +136,19 @@ def read_csv(csv_file):
             for row in reader:
                 if len(row) < 3:
                     continue
-                package = unicode(row[0],"utf-8").strip()
-                relative_path = unicode(row[1],"utf-8").strip()
-                absolute_path = unicode(row[2],"utf-8").strip()
-                if package[0] == "#": # a line of comment
+                if (row[0] != "" and row[0] != "\xef\xbb\xbf"):
+                    package = unicode(row[0],"utf-8").strip()
+                else:
+                    package = ""
+                if (row[1] != "" and row[1] != "\xef\xbb\xbf"):
+                    relative_path = unicode(row[1],"utf-8").strip()
+                else:
+                    relative_path = ""
+                if (row[2] != "" and row[2] != "\xef\xbb\xbf"):
+                    absolute_path = unicode(row[2],"utf-8").strip()
+                else:
+                    absolute_path = ""
+                if package != "" and package[0] == "#": # a line of comment
                     continue
                 output.append([package,relative_path,absolute_path])
             return output
@@ -157,8 +168,14 @@ def update_packages(db, csv_file):
     conn = sqlite3.connect(db)
     cur = conn.cursor()
     for row in rows:
-        package = row[0]
-        absolute_path = row[2]
+        if (row[0] != ""):
+            package = row[0]
+        else:
+            package = "System"
+        if (row[2] != ""):
+            absolute_path = row[2]
+        else:
+            absolute_path = row[1]
         cur.execute(sql_insert_path, (absolute_path, package, absolute_path))
         if cur.rowcount == 0:
             # in case that path already exists in DB, update "Package" value
@@ -242,6 +259,38 @@ def sign_files(kwargs):
         logging.error("Failed to run curl command")
         sys.exit(1)
 
+def sign_cms(kwargs):
+    server = kwargs["server"]
+    key_type = kwargs["key_type"]
+    file_name = kwargs["file"]
+    url = "%s/signcms/%s" % (server,key_type)
+    if key_type == "fw":
+        url = url + "/" + kwargs["version"]
+    elif key_type == "qpkg":
+        url = url + "/" + kwargs["qpkgname"] + "/" + kwargs["version"]
+    command = "curl %s --connect-timeout 60 --max-time 600 -X POST -F token=%s -F file=@%s https://%s"
+    if "cert" in kwargs:
+        if not os.path.isfile(kwargs["cert"]):
+            logging.error("Cannot find certificate file %s" % kwargs["cert"])
+            sys.exit(1)
+        command = command % ("--cacert %s" % kwargs["cert"],kwargs["token"],file_name,url)
+    else:
+        command = command % ("-k",kwargs["token"],file_name,url)
+    try:
+        sp = subprocess.Popen(command.split(),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        out,err = sp.communicate()
+        if sp.returncode != 0:
+            logging.error("curl error %s" % err)
+            sys.exit(CONNECT_ERROR)
+        response = json.loads(out)
+        if response["error"] != 0:
+            logging.error("Error message from server: %s" % response["msg"])
+            sys.exit(SERVER_ERROR)
+        return response
+    except Exception as e:
+        logging.error("Failed to run curl command")
+        sys.exit(1)
+
 def b64_decode(encoded):
     encoded_file = tempfile.NamedTemporaryFile(mode="w")
     encoded_file.write(encoded)
@@ -260,60 +309,58 @@ def b64_decode(encoded):
         logging.error("Failed to run openssl command")
         sys.exit(1)
 
-def add_key_to_db(public_key_dict, sqlite_file_name):
-    # put this key into DB and get key ID if key not in DB already
-    # otherwise get key ID from DB
+def add_cert_to_db(certificate_dict, sqlite_file_name):
+    # put this certificate into DB and get cert ID if certificate not in DB already
+    # otherwise get cert ID from DB
 
-    keyid = -1
-    key_type = public_key_dict["key_type"]
-    qpkgname = public_key_dict["qpkgname"] if "qpkgname" in public_key_dict else ""
-    version = public_key_dict["version"]
+    certid = -1
+    key_type = certificate_dict["key_type"]
+    qpkgname = certificate_dict["qpkgname"] if "qpkgname" in certificate_dict else ""
     if TOOL == "openssl":
-        key = public_key_dict["key"]
+        cert = certificate_dict["pem"]
     elif TOOL == "gpg":
-        key = b64_decode(public_key_dict["key"])
-    signature = b64_decode(public_key_dict["signature"])
+        cert = b64_decode(certificate_dict["pem"])
     conn = sqlite3.connect(sqlite_file_name)
     cur = conn.cursor()
-    sql_get_key = "SELECT * FROM PublicKey WHERE Type=? AND QpkgName=? AND Version=?;"
-    cur.execute(sql_get_key, (key_type,qpkgname,version))
+    sql_get_key = "SELECT * FROM Certificate WHERE Type=? AND QpkgName=?;"
+    cur.execute(sql_get_key, (key_type,qpkgname))
     entry = cur.fetchone()
     if entry == None:
         # Key doesnot exist in DB, insert one and return KeyID
-        sql_insert_key = "INSERT INTO PublicKey (Type,QpkgName,Version,Key,Signature) VALUES (?,?,?,?,?);"
+        sql_insert_key = "INSERT INTO Certificate (Type,QpkgName,Cert) VALUES (?,?,?);"
         if TOOL == "openssl":
-            cur.execute(sql_insert_key, (key_type,qpkgname,version,key,sqlite3.Binary(signature)))
+            cur.execute(sql_insert_key, (key_type,qpkgname,cert))
         elif TOOL == "gpg":
-            cur.execute(sql_insert_key, (key_type,qpkgname,version,sqlite3.Binary(key),sqlite3.Binary(signature)))
-        keyid = cur.lastrowid
+            cur.execute(sql_insert_key, (key_type,qpkgname,sqlite3.Binary(cert)))
+        certid = cur.lastrowid
     else:
         # Key already exists in DB, return KeyID
-        keyid = entry[0]
+        certid = entry[0]
     conn.commit()
     cur.close()
     conn.close()
-    return keyid
+    return certid
 
 def update_signatures(kwargs, server_response):
     if server_response["error"] != 0:
         logging.error("Error message from server: %s" % server_response["msg"])
         sys.exit(1)
     sqlite_file_name = kwargs["db"]
-    keyid = add_key_to_db(server_response["public_key"], sqlite_file_name)
+    certid = add_cert_to_db(server_response["certificate"], sqlite_file_name)
     signatures = server_response["signatures"]
     conn = sqlite3.connect(sqlite_file_name)
     cur = conn.cursor()
-    sql_update_signature = "UPDATE SignedFile SET PublicKeyID=?, Signature=? WHERE Path=?"
-    sql_insert_signature = "INSERT INTO SignedFile (Path,Signature,PublicKeyID) VALUES (?,?,?)"
+    sql_update_signature = "UPDATE SignedFile SET CertID=?, Signature=? WHERE Path=?"
+    sql_insert_signature = "INSERT INTO SignedFile (Path,Signature,CertID) VALUES (?,?,?)"
     for item in signatures:
         file_path = item["file"]
         signature = b64_decode(item["signature"])
         if signature is None:
             continue
-        cur.execute(sql_update_signature, (keyid, sqlite3.Binary(signature), file_path))
+        cur.execute(sql_update_signature, (certid, sqlite3.Binary(signature), file_path))
         if cur.rowcount == 0:
             # The path doesnot exist in DB, insert new one
-            cur.execute(sql_insert_signature, (file_path, sqlite3.Binary(signature), keyid))
+            cur.execute(sql_insert_signature, (file_path, sqlite3.Binary(signature), certid))
     conn.commit()
     cur.execute("DELETE FROM SignedFile WHERE Signature IS NULL;")
     conn.commit()
