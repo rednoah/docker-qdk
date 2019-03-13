@@ -10,8 +10,8 @@ RUN apt-get update \
  && rm -rvf /var/lib/apt/lists/*
 
 
-ADD QDK /usr/local/QDK
-ADD qdk.conf /etc/config/qdk.conf
+COPY QDK /usr/local/QDK
+COPY qdk.conf /etc/config/qdk.conf
 
 
 RUN cd /usr/local/QDK/src && make \
