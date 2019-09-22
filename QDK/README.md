@@ -3,7 +3,7 @@ The project is fork qnap SDK 2.2.4
 
 # QDK Download Link:
 
-https://download.qnap.com/QPKG/QDK/QDK_2.3.7.zip
+https://download.qnap.com/QPKG/QDK/QDK_2.3.10.zip
 
 # QPKG Development Guidelines
 ----------------------------------
@@ -45,15 +45,30 @@ https://github.com/qeek-dev/create-dpkg
 sudo ./InstallToUbuntu.sh install
 ```
 
-https://github.com/qnap-dev/qdk2/releases/download/v0.23/qdk2_0.23.trusty_amd64.deb
+https://github.com/qnap-dev/qdk2/releases/download/v0.24/qdk2_0.24.trusty_amd64.deb
 
-https://github.com/qnap-dev/qdk2/releases/download/v0.23/qdk2_0.23.xenial_amd64.deb
+https://github.com/qnap-dev/qdk2/releases/download/v0.24/qdk2_0.24.xenial_amd64.deb
 
 # QDK Quick Start Guide
 
 https://www.gitbook.com/book/edhongcy/qdk-quick-start-guide/details
 
 # Update new feature
+
+2.3.10
+
+    -Support 3rd party self signed mechanism
+    -Do more check and error handling
+    -Use domain name instead of fixed ip address for code signing server (this is for qnap internal only)
+
+2.3.9
+
+    -Some enhabcement and bug fix for code signing
+
+2.3.8
+
+    -Add build_sign.csv sample file
+    -Fix some bug
 
 2.3.7
 

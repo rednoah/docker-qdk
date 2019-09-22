@@ -5,7 +5,7 @@
 #
 # A QPKG installation script for QDK
 #
-# QDK V.2.3.7
+# QDK V.2.3.10
 #
 # Copyright (C) 2009,2010 QNAP Systems, Inc.
 # Copyright (C) 2010,2011 Michael Nordstrom
@@ -60,7 +60,7 @@ CMD_WGET="/usr/bin/wget"
 CMD_WLOG="/sbin/write_log"
 CMD_XARGS="/usr/bin/xargs"
 CMD_7Z="/usr/local/sbin/7z"
-
+CMD_QSH="/usr/local/sbin/qsh"
 
 ##### System definitions #####
 SYS_EXTRACT_DIR="$(pwd)"
@@ -135,6 +135,8 @@ SYS_USB_SHARE=""
 SYS_USB_PATH=""
 SYS_WEB_SHARE=""
 SYS_WEB_PATH=""
+SYS_CODESIGNING_TOKEN=""
+SYS_DELAY_ANTITAMPER_POST=0
 # Path to ipkg or opkg package tool if installed.
 CMD_PKG_TOOL=
 
@@ -148,6 +150,7 @@ CMD_PKG_TOOL=
 ###########################################
 SYS_MSG_FILE_NOT_FOUND="Data file not found."
 SYS_MSG_FILE_ERROR="[$PREFIX] Failed to install $QPKG_NAME due to data file error."
+SYS_MSG_CODESIGNING_ERROR="[$PREFIX] Failed to install $QPKG_NAME due to anti-tampering file error."
 SYS_MSG_PUBLIC_NOT_FOUND="Public share not found."
 SYS_MSG_FAILED_CONFIG_RESTORE="Failed to restore saved configuration data."
 
@@ -209,34 +212,47 @@ err_log(){
 
 handle_extract_error(){
 	if [ -x "/usr/local/sbin/notify" ]; then
-		/usr/local/sbin/notify send -A A039 -C C001 -M 35 -l error -t 3 "[{0}] {1} install failed du to data file error." "$PREFIX" "$QPKG_DISPLAY_NAME"
+		/usr/local/sbin/notify send -A A039 -C C001 -M 35 -l error -t 3 "[{0}] {1} install failed due to data file error." "$PREFIX" "$QPKG_DISPLAY_NAME"
 		set_progress_fail
 		exit 1
 	else
 		err_log "$SYS_MSG_FILE_ERROR"
 	fi
 }
-TOKEN=""
-codesigning_preinstall(){
-	local ret="$($CMD_ECHO -n "$QPKG_NAME:$SYS_QPKG_DIR" | qsh -0e cs_qdaemon.verify_qpkg)"
-	local status=`$CMD_ECHO $ret | awk -F':' '{print $1}'`
-	TOKEN=`$CMD_ECHO $ret | awk -F':' '{print $2}'`
-	echo "verify_qpkg return: $ret, status: $status, token: $TOKEN"
-	if [ "x$status" != "xsuccess" ] || [ "x$TOKEN" = "x" ]; then
-		## is it possible to be here after we have already checked cerficiate first?
-		handle_extract_error
+
+handle_codesigning_error(){
+	if [ -x "/usr/local/sbin/notify" ]; then
+		/usr/local/sbin/notify send -A A039 -C C001 -M 62 -l error -t 3 "[{0}] Failed to install {1} due to anti-tampering file error." "$PREFIX" "$QPKG_DISPLAY_NAME"
+		set_progress_fail
+		exit 1
+	else
+		err_log "$SYS_MSG_CODESIGNING_ERROR"
 	fi
 }
+
+codesigning_preinstall(){
+	local ret="$($CMD_ECHO -n "$QPKG_NAME:$SYS_QPKG_DIR" | $CMD_QSH -0e cs_qdaemon.verify_qpkg)"
+	local status=`$CMD_ECHO $ret | $CMD_AWK -F':' '{print $1}'`
+	SYS_CODESIGNING_TOKEN=`$CMD_ECHO $ret | $CMD_AWK -F':' '{print $2}'`
+	$CMD_ECHO "verify_qpkg return: $ret, status: $status, token: $SYS_CODESIGNING_TOKEN"
+	if [ "x$status" != "xsuccess" ] || [ "x$SYS_CODESIGNING_TOKEN" = "x" ]; then
+		## is it possible to be here after we have already checked cerficiate first?
+		handle_codesigning_error
+	fi
+}
+
 codesigning_postinstall(){
-	echo "codesigning_postinstall token: $TOKEN"
-	if [ "x$TOKEN" != "x" ]; then
-		local ret="$($CMD_ECHO -n "$QPKG_NAME:$TOKEN" | qsh -0e cs_qdaemon.qpkg_finish)"
-		echo "finish return: $ret"
+	local err="${1:-0}"
+	$CMD_ECHO "codesigning_postinstall token: $SYS_CODESIGNING_TOKEN, err: $err"
+	if [ "x$SYS_CODESIGNING_TOKEN" != "x" ]; then
+		local ret="$($CMD_ECHO -n "$QPKG_NAME:$SYS_CODESIGNING_TOKEN:$err" | $CMD_QSH -0e cs_qdaemon.qpkg_finish)"
+		$CMD_ECHO "finish return: $ret"
 	else
 		## is it possible to be here after we have already checked cerficiate first?
-		handle_extract_error
+		handle_codesigning_error
 	fi
 }
+
 codesigning_extract_data(){
 	[ -n "$1" ] || return 1
 	local archive="$1"
@@ -247,11 +263,16 @@ codesigning_extract_data(){
 		*.gz|*.bz2)
 			$CMD_TAR xf "$archive" "./$codesigning_dir" 2>/dev/null
 			if [ $? = 0 ]; then
-				$CMD_MV "$codesigning_dir" "$root_dir/$codesigning_dir"
+				$CMD_CP -arf "$codesigning_dir" "$root_dir/"
 				codesigning_preinstall
 				$CMD_TAR xvf "$archive" --exclude="$codesigning_dir" -C "$root_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list
 				ret=$?
-				codesigning_postinstall
+				if [ $ret = 0 ]; then
+					SYS_DELAY_ANTITAMPER_POST=1
+				else
+					codesigning_postinstall $ret
+				fi
+				$CMD_RM -rf "$codesigning_dir"
 				[ $ret = 0 ] || handle_extract_error
 			else
 				$CMD_TAR xvf "$archive" -C "$root_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list || handle_extract_error
@@ -260,11 +281,16 @@ codesigning_extract_data(){
 		*.7z)
 			$CMD_7Z x -so "$archive" 2>/dev/null | $CMD_TAR x "./$codesigning_dir" 2>/dev/null
 			if [ $? = 0 ]; then
-				$CMD_MV "$codesigning_dir" "$root_dir/$codesigning_dir"
+				$CMD_CP -arf "$codesigning_dir" "$root_dir/"
 				codesigning_preinstall
 				$CMD_7Z x -so "$archive" 2>/dev/null | $CMD_TAR xv -C "$root_dir" --exclude="$codesigning_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list
 				ret=$?
-				codesigning_postinstall
+				if [ $ret = 0 ]; then
+					SYS_DELAY_ANTITAMPER_POST=1
+				else
+					codesigning_postinstall $ret
+				fi
+				$CMD_RM -rf "$codesigning_dir"
 				[ $ret = 0 ] || handle_extract_error
 			else
 				$CMD_7Z x -so "$archive" 2>/dev/null | $CMD_TAR xv -C "$root_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list || handle_extract_error
@@ -444,7 +470,7 @@ check_qts_version(){
 
 	if [ ${MINI_VERSION} -gt ${NOW_VERSION} ]; then
 		if [ -x "/usr/local/sbin/notify" ]; then
-			/usr/local/sbin/notify send -A A039 -C C001 -M 40 -l error -t 3 "[{0}] {1} install failed du to the QTS firmware is not compatible, please upgrade QTS to {2} or newer version." "$PREFIX" "$QPKG_DISPLAY_NAME" "$QTS_MINI_VERSION"
+			/usr/local/sbin/notify send -A A039 -C C001 -M 40 -l error -t 3 "[{0}] {1} install failed due to the QTS firmware is not compatible, please upgrade QTS to {2} or newer version." "$PREFIX" "$QPKG_DISPLAY_NAME" "$QTS_MINI_VERSION"
 			set_progress_fail
 			exit 1
 		else
@@ -452,7 +478,7 @@ check_qts_version(){
 		fi
 	elif [ ${MAX_VERSION} -lt ${NOW_VERSION} ]; then
 		if [ -x "/usr/local/sbin/notify" ]; then
-			/usr/local/sbin/notify send -A A039 -C C001 -M 41 -l error -t 3 "[{0}] {1} install failed du to the QTS firmware is not compatible, please downgrade QTS to {2} or newer version." "$PREFIX" "$QPKG_DISPLAY_NAME" "$QTS_MAX_VERSION"
+			/usr/local/sbin/notify send -A A039 -C C001 -M 41 -l error -t 3 "[{0}] {1} install failed due to the QTS firmware is not compatible, please downgrade QTS to {2} or newer version." "$PREFIX" "$QPKG_DISPLAY_NAME" "$QTS_MAX_VERSION"
 			set_progress_fail
 			exit 1
 		else
@@ -1312,7 +1338,7 @@ main(){
 		SYS_QPKG_DATA_FILE=$SYS_QPKG_DATA_FILE_7ZIP
 	else
 		if [ -x "/usr/local/sbin/notify" ]; then
-			/usr/local/sbin/notify send -A A039 -C C001 -M 34 -l error -t 3 "[{0}] {1} install failed du to cannot find the data file." "$PREFIX" "$QPKG_DISPLAY_NAME"
+			/usr/local/sbin/notify send -A A039 -C C001 -M 34 -l error -t 3 "[{0}] {1} install failed due to cannot find the data file." "$PREFIX" "$QPKG_DISPLAY_NAME"
 			set_progress_fail
 			exit 1
 		else
@@ -1344,6 +1370,10 @@ main(){
 
 	# This also starts the service program if the QPKG is enabled.
 	set_qpkg_status
+
+	if [ $SYS_DELAY_ANTITAMPER_POST = 1 ]; then
+		codesigning_postinstall 0
+	fi
 
 	##system pop up log after QPKG has installed and app was enable
 

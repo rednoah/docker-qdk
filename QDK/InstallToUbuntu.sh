@@ -7,7 +7,7 @@ if [ -d "/usr/local/QDK" ]; then
 	echo "QDK exists."
 else
 	apt-get update
-	apt-get install -y build-essential wget bsdmainutils curl
+	apt-get install -y build-essential wget bsdmainutils curl python openssl rsync
 fi
 
 case "$1" in
@@ -17,12 +17,12 @@ case "$1" in
 		make
 		cd ../
 		echo "Install QDK"
-		cp -rf ./shared /usr/local/QDK
+		cp -rf ./shared /usr/share/QDK
 		[ -d "/etc/config" ] || mkdir "/etc/config"
 		cp ./shared/qdk.conf /etc/config
 		sed -e '2d' ./shared/qdk.conf > /etc/config/qdk.conf
-		sed -i '2iQDK_PATH_P=/usr/local' /etc/config/qdk.conf
-		echo "PATH=$PATH:/usr/local/QDK/bin" >> ~/.bashrc
+		sed -i '2iQDK_PATH_P=/usr/share' /etc/config/qdk.conf
+		echo "PATH=$PATH:/usr/share/QDK/bin" >> ~/.bashrc
 		source ~/.bashrc
 	;;
 	remove)
