@@ -11,3 +11,8 @@ example: build
 	rm -rvf example
 	docker run -v $(PWD):/src --rm docker-qdk --create-env example
 	docker run -v $(PWD)/example:/src --rm docker-qdk .
+
+clean:
+	git reset --hard
+	git pull
+	git log -1
