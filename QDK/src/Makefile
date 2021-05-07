@@ -2,7 +2,7 @@
 
 all:
 	@$(CC) -o qpkg_encrypt qpkg_encrypt.c
-	mv qpkg_encrypt ../shared/bin
+	mv qpkg_encrypt /bin
 
 clean:
-	rm -rf ../shared/bin/qpkg_encrypt
+	rm -rf /bin/qpkg_encrypt

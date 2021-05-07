@@ -23,9 +23,11 @@ case "$1" in
     $0 stop
     $0 start
     ;;
+  remove)
+    ;;
 
   *)
-    echo "Usage: $0 {start|stop|restart}"
+    echo "Usage: $0 {start|stop|restart|remove}"
     exit 1
 esac
 

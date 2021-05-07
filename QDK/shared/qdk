@@ -1,7 +1,23 @@
 #!/bin/sh
 CONF=/etc/config/qpkg.conf
 QPKG_NAME=qdk
+QDK_DIR=$(/sbin/getcfg $QPKG_NAME Install_Path -d "" -f $CONF)
+ARCH=`uname -m`
 
+install_xz(){
+    if [ -d "$QDK_DIR/xz" ]; then
+        echo "xz in the nas"
+    else
+        mkdir $QDK_DIR/xz
+        if [ $ARCH = "x86_64" ]; then
+            tar -C $QDK_DIR/xz -zxvf $QDK_DIR/xz_1404_amd64.tgz
+        elif [ $ARCH = "aarch64" ]; then
+            tar -C $QDK_DIR/xz -zxvf $QDK_DIR/xz_1404_aarch64.tgz
+        elif [ $ARCH = "armv7l" ]; then
+            tar -C $QDK_DIR/xz -zxvf $QDK_DIR/xz_1404_armhf.tgz
+        fi
+    fi
+}
 case "$1" in
   start)
     ENABLED=$(/sbin/getcfg $QPKG_NAME Enable -u -d FALSE -f $CONF)
@@ -9,12 +25,18 @@ case "$1" in
         echo "$QPKG_NAME is disabled."
         exit 1
     fi
-    QDK_DIR=$(/sbin/getcfg $QPKG_NAME Install_Path -d "" -f $CONF)
+    install_xz
     [ -x $QDK_DIR/bin/qbuild ] && /bin/ln -sf $QDK_DIR/bin/qbuild /usr/bin/qbuild
+    if [ ! -f "/bin/xz" ]; then
+        /bin/ln -sf $QDK_DIR/xz/bin/xz /bin/xz
+    fi
     ;;
 
   stop)
     /bin/rm -f /usr/bin/qbuild
+    if [ -L "/bin/xz" ]; then
+        /bin/rm -f /bin/xz
+    fi
     ;;
 
   restart)

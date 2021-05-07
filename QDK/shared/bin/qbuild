@@ -37,9 +37,22 @@ if [ ! -e "$CS_PYTHON" ]; then
 CS_PYTHON="/usr/local/bin/python2"
 fi
 
+if [ -f "/etc/config/uLinux.conf" ]; then
+    IS_NAS="TRUE"
+else
+    IS_NAS="FALSE"
+fi
+
 # Cleanup any temporary directories and files at termination.
 trap 'cleanup_all' INT TERM
 
+if [ $IS_NAS = "TRUE" ]; then
+    CONF=/etc/config/qpkg.conf
+    QPKG_NAME=qdk
+    QDK_PATH=$(/sbin/getcfg $QPKG_NAME Install_Path -d "" -f $CONF)
+else
+    QDK_PATH="${QDK_PATH:-$(dirname "$(dirname "$(readlink -f "$0")")")}"
+fi
 # Check for deprecated definitions and replace them with new
 # definitions (when applicable).
 check_deprecated_definitions(){
@@ -521,9 +534,14 @@ do_code_signing(){
 	fi
 	[ -z "$QNAP_CODE_SIGNING_SERVER_IP" ] && QNAP_CODE_SIGNING_SERVER_IP=$DEFAULT_QNAP_CODE_SIGNING_SERVER_IP
 	[ -z "$QNAP_CODE_SIGNING_SERVER_PORT" ] && QNAP_CODE_SIGNING_SERVER_PORT=$DEFAULT_QNAP_CODE_SIGNING_SERVER_PORT
-	$CS_PYTHON "${QDK_SCRIPTS_DIR}/codesigning_qpkg.py" cwd="`pwd`" buildpath=$build_dir csv="${QNAP_CODE_SIGNING_CSV}" server=${QNAP_CODE_SIGNING_SERVER_IP}:${QNAP_CODE_SIGNING_SERVER_PORT} >code_signing.log 2>&1
-	if [ $? != 0 ]; then
-		err_msg "$QDK_QPKG_FILE: Failed to add anti-tamper support"
+	if [ "$QNAP_CODE_SIGNING_SERVER_IP" = "172.17.21.68" ]; then
+		msg "$QPKG_NAME: Do not used 172.17.21.68:5000 anymore. Please use codesigning.qnap.com.tw:5001. You also need to check the DNS setting on your build environment so that codesigning.qnap.com.tw can be resolved properly"
+		QNAP_CODE_SIGNING_SERVER_IP="codesigning.qnap.com.tw"
+		QNAP_CODE_SIGNING_SERVER_PORT="5001"
+	fi
+	$CS_PYTHON "${QDK_SCRIPTS_DIR}/codesigning_qpkg.py" cwd="`pwd`" buildpath=$build_dir csv="${QNAP_CODE_SIGNING_CSV}" server=${QNAP_CODE_SIGNING_SERVER_IP}:${QNAP_CODE_SIGNING_SERVER_PORT} 2>&1 | tee -a code_signing.log
+	if [ ${PIPESTATUS[0]} != 0 ]; then
+		err_msg "$QPKG_NAME: Failed to add anti-tamper support"
 	fi
 }
 
@@ -531,6 +549,8 @@ do_code_signing(){
 create_data_package(){
 	local arch_msg="${1:+ for $1}"
 	local arch_dir="$2"
+	local BUILD_DIR=build.$$
+	local TMP_DIR=tmp.$$
 
 	msg "Creating archive with data files${arch_msg}..."
 
@@ -575,6 +595,16 @@ create_data_package(){
 			debug_msg "[$QDK_COMPRESS_FILE]"
 			debug_msg "$(/bin/tar $tar_verbose -cf - -C build.$$ . | /usr/local/sbin/7z a -si tmp.$$/data.tar.7z)"
 			;;
+		xz)
+			QDK_COMPRESS_FILE=data.tar.xz
+			debug_msg "[$QDK_COMPRESS_FILE]"
+                        if [ $IS_NAS = "TRUE" ]; then
+                            debug_msg "$(tar cf - -C build.$$ . | xz > tmp.$$/${QDK_COMPRESS_FILE})"
+                        else
+			    local SIZE=$(du -sb "${BUILD_DIR}" | grep -o '^[0-9]\+')
+			    debug_msg "$(tar cf - -C ${BUILD_DIR} . | pv -s $SIZE -N tar | xz > ${TMP_DIR}/${QDK_COMPRESS_FILE})"
+                        fi
+			;;
 		*)
 			err_msg "$QDK_COMPRESS_METHOD: unknown compression format"
 	esac
@@ -591,6 +621,19 @@ create_control_package(){
 	/bin/cp -p "$QDK_INSTALL_SCRIPT" build.$$/
 	/bin/cp -p "$QDK_PACKAGE_ROUTINES" build.$$/package_routines
 	/bin/cp -p "$QDK_QPKG_CONFIG" build.$$/qpkg.cfg
+	# cp .nc folder
+	if [ -d "${QDK_DATA_DIR_SHARED:-shared}/.nc" ]; then
+		/bin/cp -fa "${QDK_DATA_DIR_SHARED:-shared}/.nc" build.$$/.nc
+		add_icons
+	fi
+	# xz utility
+	if [ "$QDK_COMPRESS_METHOD" == "xz" ]; then
+            if [ $IS_NAS = "TRUE" ]; then
+		/bin/cp $QDK_PATH/xz_1404_${QDK_XZ_ARCH}.tgz build.$$/xz.tgz
+            else
+		/bin/cp $(dirname $(dirname $(realpath $0)))/xz_1404_${QDK_XZ_ARCH}.tgz build.$$/xz.tgz
+            fi
+	fi
 
 	[ -f tmp.$$/md5sum ] && /bin/cp -p tmp.$$/md5sum build.$$/
 	[ -f tmp.$$/built_version ] && /bin/cp -p tmp.$$/built_version build.$$/
@@ -652,7 +695,7 @@ add_qpkg_header(){
 	# Return value 0 to keep the QPKG package after installation
 	# Return value 10 to remove QPKG package after installation
 	local retval=10
-	local extract_dir="/mnt/HDA_ROOT/update_pkg/tmp"
+	local extract_dir="\$QPKG_INSTALL_PATH/.tmp"
 	local wrong_arch="[$PREFIX] Failed to install $QPKG_DISPLAY_NAME $QPKG_VER. Installation package is incompatible. Use the correct package."
 	local log_tool="/sbin/log_tool -t2 -uSystem -p127.0.0.1 -mlocalhost -a"
 
@@ -734,13 +777,11 @@ add_qpkg_header(){
 			else
 				if [ -x "/usr/local/sbin/notify" ]; then
 					/usr/local/sbin/notify send -A A039 -C C001 -M 50 -l error -t 3 "[{0}] {1} install failed due to QTS application install volume not found." "$PREFIX" "$QPKG_DISPLAY_NAME"
-					set_progress_fail
-					exit
+					echo -1 > /tmp/update_process && exit 1
 				else
 					$log_tool "[$PREFIX] Failed to install $QPKG_DISPLAY_NAME. The selected installation volume is missing."
-					set_progress_fail
 				fi
-				exit
+				echo -1 > /tmp/update_process && exit 1
 			fi
 		fi
 		return 0
@@ -752,13 +793,11 @@ add_qpkg_header(){
 		else
 			if [ -x "/usr/local/sbin/notify" ]; then
 				/usr/local/sbin/notify send -A A039 -C C001 -M 50 -l error -t 3 "[{0}] {1} install failed due to QTS application install volume not found." "$PREFIX" "$QPKG_DISPLAY_NAME"
-				set_progress_fail
-				exit
+				echo -1 > /tmp/update_process && exit 1
 			else
 				$log_tool "[$PREFIX] Failed to install $QPKG_DISPLAY_NAME. The selected installation volume is missing."
-				set_progress_fail
 			fi
-			exit
+			echo -1 > /tmp/update_process && exit 1
 		fi
 	fi
 	}
@@ -768,15 +807,13 @@ add_qpkg_header(){
 		/bin/cat >>$QDK_QPKG_FILE <<-EOF
 		wrong_arch(){
 			if [ -x "/usr/local/sbin/notify" ]; then
-				/usr/local/sbin/notify send -A A039 -C C001 -M 51 -l error -t 3 "[{0}] {1} {2} install failed due to the platform is imcompatable. Please use correct package for installation." "$PREFIX" "$QPKG_DISPLAY_NAME" "$QPKG_VER"
-				set_progress_fail
-				exit
+				/usr/local/sbin/notify send -A A039 -C C001 -M 51 -l error -t 3 "[{0}] {1} {2} install failed due to the platform is incompatible. Please use correct package for installation." "$PREFIX" "$QPKG_DISPLAY_NAME" "$QPKG_VER"
+				echo -1 > /tmp/update_process && exit 1
 			else
 				local wrong_arch_msg="$wrong_arch"
 				echo "Installation Abort." && echo "\$wrong_arch_msg"
 				$log_tool "[$PREFIX] Failed to install $QPKG_DISPLAY_NAME $QPKG_VER. Installation package is incompatible. Use the correct package."
-				set_progress_fail
-				echo -1 > /tmp/update_process && exit
+				echo -1 > /tmp/update_process && exit 1
 			fi
 		}
 		arch_ok(){
@@ -805,7 +842,7 @@ add_qpkg_header(){
 
 	/bin/cat >>$QDK_QPKG_FILE <<-EOF
 	find_base
-	[ -z "\$_EXTRACT_DIR" ] && _EXTRACT_DIR="\$QPKG_INSTALL_PATH/.tmp"
+	_EXTRACT_DIR="$extract_dir"
 	/bin/mkdir -p \$_EXTRACT_DIR || exit 1
 	script_len=SCRIPT_LEN
 	/bin/dd if="\${0}" bs=\$script_len skip=1 | /bin/tar -xO | /bin/tar -xzv -C \$_EXTRACT_DIR || exit 1
@@ -922,6 +959,11 @@ add_qpkg_signature(){
 		verbose_msg "Connecting to code signing server to create digital signature..."
 		[ -z "$QNAP_CODE_SIGNING_SERVER_IP" ] && QNAP_CODE_SIGNING_SERVER_IP=$DEFAULT_QNAP_CODE_SIGNING_SERVER_IP
 		[ -z "$QNAP_CODE_SIGNING_SERVER_PORT" ] && QNAP_CODE_SIGNING_SERVER_PORT=$DEFAULT_QNAP_CODE_SIGNING_SERVER_PORT
+		if [ "$QNAP_CODE_SIGNING_SERVER_IP" = "172.17.21.68" ]; then
+			msg "$QPKG_NAME: Do not used 172.17.21.68:5000 anymore. Please use codesigning.qnap.com.tw:5001. You also need to check the DNS setting on your build environment so that codesigning.qnap.com.tw can be resolved properly"
+			QNAP_CODE_SIGNING_SERVER_IP="codesigning.qnap.com.tw"
+			QNAP_CODE_SIGNING_SERVER_PORT="5001"
+		fi
 		openssl dgst -sha1 -binary "${QDK_QPKG_FILE}" > "${QDK_QPKG_FILE}.sha"
 		$CS_PYTHON "${QDK_SCRIPTS_DIR}/codesigning_qpkg_cms.py" \
 			cwd="`pwd`" server=${QNAP_CODE_SIGNING_SERVER_IP}:${QNAP_CODE_SIGNING_SERVER_PORT} \
@@ -951,8 +993,14 @@ add_qpkg_signature(){
 		elif [ "$DO_CODE_SIGNING_OFFLINE" = "TRUE" ]; then
 			verbose_msg "Creating code signing digital signature..."
 			openssl dgst -sha1 -binary "${QDK_QPKG_FILE}" > "${QDK_QPKG_FILE}.sha"
-			openssl cms -sign -in "${QDK_QPKG_FILE}.sha" -binary -nodetach -out "${QDK_QPKG_FILE}.msg" \
-				-signer certificate -inkey private_key 2>/dev/null
+			if [ -f "ca_certs" ]; then
+				openssl cms -sign -in "${QDK_QPKG_FILE}.sha" -binary -nodetach -out "${QDK_QPKG_FILE}.msg" \
+				-signer certificate -inkey private_key \
+				-certfile ca_certs 2>/dev/null
+			else
+				openssl cms -sign -in "${QDK_QPKG_FILE}.sha" -binary -nodetach -out "${QDK_QPKG_FILE}.msg" \
+					-signer certificate -inkey private_key 2>/dev/null
+			fi
 			local err_code=$?
 			if [ $err_code = "2" ]; then
 				warn_msg "Failed to open certificate or private key"
@@ -1007,9 +1055,15 @@ add_qpkg_tail(){
 
 	verbose_msg "Adding tail data..."
 
+	local max_qpkg_name_len=20
+	local QPKG_NAME_SHORTER=$QPKG_NAME
+	if [ $max_qpkg_name_len -lt ${#QPKG_NAME} ]; then
+		warn_msg "QPKG_NAME: the length of $QPKG_NAME must be less than or equal to $max_qpkg_name_len; name truncated."
+		QPKG_NAME_SHORTER=$(/usr/bin/expr substr "$QPKG_NAME" 1 $max_qpkg_name_len)
+	fi
 	[ -z "$QDK_BUILD_MODEL" ] || _QPKG_MODEL="$QDK_BUILD_MODEL"
 	pad_field _QPKG_MODEL
-	_QPKG_NAME="$QPKG_NAME"
+	_QPKG_NAME="$QPKG_NAME_SHORTER"
 	pad_field _QPKG_NAME 20
 	_QPKG_VERSION="$QPKG_VER"
 	pad_field _QPKG_VERSION
@@ -1184,7 +1238,7 @@ check_missing_config_files(){
 # Check definitions in QPKG configuration file.
 check_mandatory_definitions(){
 	# Source the QPKG configuration file to make all its fields available.
-	. "./$QDK_QPKG_CONFIG" || err_msg "$QDK_QPKG_CONFIG: corrupt configuration file"
+	. "$QDK_QPKG_CONFIG" || err_msg "$QDK_QPKG_CONFIG: corrupt configuration file"
 
 	[ -n "$QPKG_AUTHOR" ] || err_msg "$QDK_QPKG_CONFIG: QPKG_AUTHOR must be assigned a value"
 	[ -n "$QPKG_NAME" ] || err_msg "$QDK_QPKG_CONFIG: QPKG_NAME must be assigned a value"
@@ -1200,7 +1254,7 @@ truncate_qpkg_name(){
 		edit_qpkg_config QPKG_NAME "${QPKG_NAME%% *}"
 	fi
 
-	local max_qpkg_name_len=20
+	local max_qpkg_name_len=40
 	if [ $max_qpkg_name_len -lt ${#QPKG_NAME} ]; then
 		warn_msg "QPKG_NAME: the length of $QPKG_NAME must be less than or equal to $max_qpkg_name_len; name truncated."
 		QPKG_NAME=$(/usr/bin/expr substr "$QPKG_NAME" 1 $max_qpkg_name_len)
@@ -1591,16 +1645,21 @@ add_code_signing(){
 	# Source the configuration file to make all its fields available.
 	. "$code_signing_cfg" || err_msg "$code_signing_cfg: corrupt configuration file"
 
-	if [ -z "$PRIVATE_KEY" ]; then
+	if [ "x${QNAP_CODE_SIGNING}" = "x1" ]; then
 		# Connecting to server
 		[ -z "$QNAP_CODE_SIGNING_SERVER_IP" ] && QNAP_CODE_SIGNING_SERVER_IP=$DEFAULT_QNAP_CODE_SIGNING_SERVER_IP
 		[ -z "$QNAP_CODE_SIGNING_SERVER_PORT" ] && QNAP_CODE_SIGNING_SERVER_PORT=$DEFAULT_QNAP_CODE_SIGNING_SERVER_PORT
 		[ -n "$QPKG_NAME" ] || err_msg "$code_signing_cfg: QPKG_NAME not provided"
 		[ -n "$QPKG_VER" ] || err_msg "$code_signing_cfg: QPKG_VER not provided"
+		if [ "$QNAP_CODE_SIGNING_SERVER_IP" = "172.17.21.68" ]; then
+			msg "$QPKG_NAME: Do not used 172.17.21.68:5000 anymore. Please use codesigning.qnap.com.tw:5001. You also need to check the DNS setting on your build environment so that codesigning.qnap.com.tw can be resolved properly"
+			QNAP_CODE_SIGNING_SERVER_IP="codesigning.qnap.com.tw"
+			QNAP_CODE_SIGNING_SERVER_PORT="5001"
+		fi
 	else
 		# 3rd party, not connected to server, sign using local certificate and private key
-                [ -f "$QNAP_CERT" ] || err_msg "$code_signing_cfg: QNAP_CERT $QNAP_CERT cannot be found"
-                [ -f "$PRIVATE_KEY" ] || err_msg "$code_signing_cfg: PRIVATE_KEY $PRIVATE_KEY cannot be found"
+		[ -f "$QNAP_CERT" ] || err_msg "$code_signing_cfg: QNAP_CERT $QNAP_CERT cannot be found"
+		[ -f "$PRIVATE_KEY" ] || err_msg "$code_signing_cfg: PRIVATE_KEY $PRIVATE_KEY cannot be found"
 	fi
 
 	local qpkg_data_file="${qpkg}.data"
@@ -1618,15 +1677,21 @@ add_code_signing(){
 	#eval "$dd_cmd"
 	openssl dgst -sha1 -binary "${qpkg}.$$" > "${qpkg}.sha"
 
-	if [ -z "$PRIVATE_KEY" ]; then
+	if [ "x${QNAP_CODE_SIGNING}" = "x1" ]; then
 		# Send qpkg digest to server
 		verbose_msg "Connecting to code signing server to create digital signature..."
 		$CS_PYTHON "${QDK_SCRIPTS_DIR}/codesigning_qpkg_cms.py" server=${QNAP_CODE_SIGNING_SERVER_IP}:${QNAP_CODE_SIGNING_SERVER_PORT} qpkgname=${QPKG_NAME} version=${QPKG_VER} in="${qpkg}.sha" out="${qpkg}.msg" 2>&1 | tee -a code_signing.log
 	else
 		# 3rd party, not connected to server, sign using local certificate and private key
 		verbose_msg "Creating code signing digital signature..."
-		openssl cms -sign -in "${qpkg}.sha" -binary -nodetach -out "${qpkg}.msg" \
+		if [ -f "${CA_CERTS}" ]; then
+			openssl cms -sign -in "${qpkg}.sha" -binary -nodetach -out "${qpkg}.msg" \
+				-signer ${QNAP_CERT} -inkey ${PRIVATE_KEY} \
+				-certfile ${CA_CERTS} 2>/dev/null
+		else
+			openssl cms -sign -in "${qpkg}.sha" -binary -nodetach -out "${qpkg}.msg" \
 				-signer ${QNAP_CERT} -inkey ${PRIVATE_KEY} 2>/dev/null
+		fi
 		local err_code=$?
 		if [ $err_code = "2" ]; then
 			warn_msg "Failed to open certificate or private key"
@@ -1663,6 +1728,11 @@ add_code_signing(){
 verify_code_signing_online(){
 	[ -z "$QNAP_CODE_SIGNING_SERVER_IP" ] && QNAP_CODE_SIGNING_SERVER_IP=$DEFAULT_QNAP_CODE_SIGNING_SERVER_IP
 	[ -z "$QNAP_CODE_SIGNING_SERVER_PORT" ] && QNAP_CODE_SIGNING_SERVER_PORT=$DEFAULT_QNAP_CODE_SIGNING_SERVER_PORT
+	if [ "$QNAP_CODE_SIGNING_SERVER_IP" = "172.17.21.68" ]; then
+		msg "$QPKG_NAME: Do not used 172.17.21.68:5000 anymore. Please use codesigning.qnap.com.tw:5001. You also need to check the DNS setting on your build environment so that codesigning.qnap.com.tw can be resolved properly"
+		QNAP_CODE_SIGNING_SERVER_IP="codesigning.qnap.com.tw"
+		QNAP_CODE_SIGNING_SERVER_PORT="5001"
+	fi
 
 	local curl_cmd=
 	local output=
@@ -1755,17 +1825,24 @@ verify_code_signing_offline(){
 	openssl cms -verify -in $1 -CAfile $ca_cert 2>/dev/null > $verify_dgst_file
 	$CMD_CMP $2 $verify_dgst_file 2>/dev/null
 	if [ $? -eq 0 ]; then
-		msg "Code signing digital signature verification successful"
+		msg "Code signing digital signature verification successful (QNAP-issued certificate)"
 		ret=0
 	else
 		openssl cms -verify -in $1 -CAfile $ca_cert_2 2>/dev/null > $verify_dgst_file
 		$CMD_CMP $2 $verify_dgst_file 2>/dev/null
 		if [ $? -eq 0 ]; then
-			msg "Code signing digital signature verification successful"
+			msg "Code signing digital signature verification successful (QNAP-issued certificate)"
 			ret=0
 		else
-			msg "Code signing digital signature verification failed"
-			ret=1
+			openssl cms -verify -purpose any -CApath /etc/ssl/certs/ -in $1 > $verify_dgst_file
+			$CMD_CMP $2 $verify_dgst_file 2>/dev/null
+			if [ $? -eq 0 ]; then
+				msg "Code signing digital signature verification successful (non QNAP-issued certificate)"
+				ret=0
+			else
+				msg "Code signing digital signature verification failed"
+				ret=1
+			fi
 		fi
 	fi
 	/bin/rm $verify_dgst_file
@@ -1804,7 +1881,7 @@ verify_code_signing(){
 	/bin/dd if=$qpkg bs=1 skip=$code_signing_pos count=$code_signing_len 2>/dev/null > $signature_file
 
 	local ret=
-	if [ ! -f "private_key" ] && [ -z "$QNAP_CA_CERT" ]; then
+	if [ "x${QNAP_CODE_SIGNING}" = "x1"  ]; then
 		verify_code_signing_online ${signature_file} ${dgst_file}
 		ret=$?
 	else
@@ -1824,7 +1901,7 @@ usage: $(/usr/bin/basename $0) [--extract QPKG [DIR]] [--create-env NAME] [-s|--
 	[--build-number NUMBER] [--build-model MODEL] [--build-dir BUILD_DIR] [--force-config]
 	[--setup SCRIPT] [--teardown SCRIPT] [--pre-build SCRIPT]
 	[--post-build SCRIPT] [--exclude PATTERN] [--exclude-from FILE]
-	[--gzip|--bzip2|--7zip] [--sign] [--gpg-name ID] [--verify QPKG]
+	[--gzip|--bzip2|--7zip|--xz {amd64|armhf}] [--sign] [--gpg-name ID] [--verify QPKG]
 	[--add-sign QPKG] [--import-key KEY] [--remove-key ID] [--list-keys]
 	[--query OPTION QPKG] [-v|--verbose] [-q|--quiet] [--strict]
 	[--add-code-signing QPKG] [--verify-code-signing QPKG]
@@ -2023,6 +2100,11 @@ main(){
 				;;
 			--bzip2)	QDK_COMPRESS_METHOD="bzip2"
 				;;
+			--xz)	QDK_COMPRESS_METHOD="xz"
+				[ -n "$QDK_COMPRESS_METHOD" ] || err_msg "--xz: no arch"
+				QDK_XZ_ARCH=$2
+				shift
+				;;
 			--create-env)	qbuild_qpkg_name="$2"
 				[ -n "$qbuild_qpkg_name" ] || err_msg "--create-env: no name"
 				shift
@@ -2206,24 +2288,16 @@ main(){
 # System-wide definitions
 
 if [ -f "/etc/config/qdk.conf" ]; then
-	QDK_CONF_FILE="/etc/config/qdk.conf"
-elif [ -f "../qdk.conf" -o -f "./qdk.conf" ]; then
-	echo "You are runing Linux ..."
-	if [ -f "./qdk.conf" ]; then
-		echo "."
-		QDK_CONF_FILE="./qdk.conf"
-	elif [ -f "../qdk.conf" ]; then
-		echo ".."
-		QDK_CONF_FILE="../qdk.conf"
-	else
-		echo "Unknow Environment !!!"
-		QDK_CONF_FILE=""
-	fi
+    QDK_CONF_FILE="/etc/config/qdk.conf"
 else
-	echo "Unknow Environment !!!"
-	QDK_CONF_FILE=""
+    if [ -f "${QDK_PATH}/qdk.conf" ]; then
+        QDK_CONF_FILE="${QDK_PATH}/qdk.conf"
+    elif [ -f "./qdk.conf" ]; then
+        QDK_CONF_FILE="./qdk.conf"
+    else
+        err_msg "qdk.conf: not found"
+    fi
 fi
-[ -n "$QDK_CONF_FILE" ] || err_msg "no QDK_PATH specified in ../qdk.conf or /etc/config/qdk.conf"
 
 . ${QDK_CONF_FILE}
 

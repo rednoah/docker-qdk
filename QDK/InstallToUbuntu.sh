@@ -3,7 +3,7 @@
 #This is easy install QDK to ubuntu tool
 ########################################
 
-if [ -d "/usr/local/QDK" ]; then
+if [ -d "/usr/share/QDK" ]; then
 	echo "QDK exists."
 else
 	apt-get update
@@ -28,7 +28,7 @@ case "$1" in
 	remove)
 		echo "Remove QDK"
 		rm -rf "/etc/config"
-		rm -rf "/usr/local/QDK"
+		rm -rf "/usr/share/QDK"
 		sed -i '/QDK/d' ~/.bashrc
 		source ~/.bashrc
 	;;

@@ -10,14 +10,14 @@ RUN apt-get update \
  && rm -rvf /var/lib/apt/lists/*
 
 
-COPY QDK /usr/local/QDK
+COPY QDK /usr/share/QDK
 COPY qdk.conf /etc/config/qdk.conf
 
 
-RUN cd /usr/local/QDK/src && make \
+RUN cd /usr/share/QDK/src && make \
  && ln -s /usr/bin/7z /usr/local/sbin/7z \
- && ln -s /usr/local/QDK/shared/bin/qbuild /usr/bin/qbuild \
- && ln -s /usr/local/QDK/shared/bin/qpkg_encrypt /usr/bin/qpkg_encrypt
+ && ln -s /usr/share/QDK/shared/bin/qbuild /usr/bin/qbuild \
+ && ln -s /usr/share/QDK/shared/bin/qpkg_encrypt /usr/bin/qpkg_encrypt
 
 
 VOLUME /src

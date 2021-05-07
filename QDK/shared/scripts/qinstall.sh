@@ -5,7 +5,7 @@
 #
 # A QPKG installation script for QDK
 #
-# QDK V.2.3.10
+# QDK V.2.3.11
 #
 # Copyright (C) 2009,2010 QNAP Systems, Inc.
 # Copyright (C) 2010,2011 Michael Nordstrom
@@ -72,6 +72,7 @@ SYS_RSS_IMG_DIR="/home/httpd/RSS/images"
 SYS_QPKG_DATA_FILE_GZIP="./data.tar.gz"
 SYS_QPKG_DATA_FILE_BZIP2="./data.tar.bz2"
 SYS_QPKG_DATA_FILE_7ZIP="./data.tar.7z"
+SYS_QPKG_DATA_FILE_XZ="./data.tar.xz"
 SYS_QPKG_DATA_CONFIG_FILE="./conf.tar.gz"
 SYS_QPKG_DATA_MD5SUM_FILE="./md5sum"
 SYS_QPKG_DATA_BUILTVER_FILE="./built_version"
@@ -104,6 +105,8 @@ SYS_QPKG_CONF_FIELD_USE_PROXY="Use_Proxy"
 SYS_QPKG_CONF_FIELD_PROXY_PATH="Proxy_Path"
 SYS_QPKG_CONF_FIELD_TIMEOUT="Timeout"
 SYS_QPKG_CONF_FIELD_VISIBLE="Visible"
+SYS_QPKG_CONF_FIELD_CONTAINER="Container"
+SYS_QPKG_CONF_FIELD_EXEC_FILES="Exec_Files"
 SYS_QPKG_CONF_FIELD_FW_VER_MIN="FW_Ver_Min"
 SYS_QPKG_CONF_FIELD_FW_VER_MAX="FW_Ver_Max"
 PREFIX="App Center"
@@ -144,6 +147,9 @@ CMD_PKG_TOOL=
 # QPKG definitions
 ###################
 . qpkg.cfg
+if [ -z "$QPKG_DISPLAY_NAME" ]; then
+	QPKG_DISPLAY_NAME=$QPKG_DISPLAYNAME
+fi
 
 ###########################################
 # System messages
@@ -259,6 +265,10 @@ codesigning_extract_data(){
 	local root_dir="${2:-$SYS_QPKG_DIR}"
 	local codesigning_dir=".qcodesigning"
 	local ret=1
+	local xz_ld_wrapper='lib/ld-2.19.so'
+	if [ x"$SYS_CPU_ARCH" == x"arm_64" ]; then
+		xz_ld_wrapper=''
+	fi
 	case "$archive" in
 		*.gz|*.bz2)
 			$CMD_TAR xf "$archive" "./$codesigning_dir" 2>/dev/null
@@ -296,6 +306,26 @@ codesigning_extract_data(){
 				$CMD_7Z x -so "$archive" 2>/dev/null | $CMD_TAR xv -C "$root_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list || handle_extract_error
 			fi
 			;;
+		*.xz)
+			$CMD_TAR xf "./xz.tgz"
+			LD_LIBRARY_PATH=${PWD}/lib $xz_ld_wrapper bin/xzcat "$archive" 2>/dev/null | $CMD_TAR x "./$codesigning_dir" 2>/dev/null
+			if [ $? = 0 ]; then
+				$CMD_CP -arf "$codesigning_dir" "$root_dir"
+				codesigning_preinstall
+				LD_LIBRARY_PATH=${PWD}/lib $xz_ld_wrapper bin/xzcat "$archive" 2>/dev/null | $CMD_TAR xv -C "$root_dir" --exclude="$codesigning_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list
+				ret=$?
+                                if [ $ret = 0 ]; then
+					SYS_DELAY_ANTITAMPER_POST=1
+				else
+					codesigning_postinstall $ret
+                                fi
+				$CMD_RM -rf "$codesigning_dir"
+				[ $ret = 0 ] || handle_extract_error
+			else
+				$CMD_TAR xf "./xz.tgz"
+				LD_LIBRARY_PATH=${PWD}/lib $xz_ld_wrapper bin/xzcat "$archive" 2>/dev/null | $CMD_TAR xv -C "$root_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list ||handle_extract_error
+			fi
+			;;
 		*)
 			handle_extract_error
 	esac
@@ -308,12 +338,20 @@ extract_data(){
 	[ -n "$1" ] || return 1
 	local archive="$1"
 	local root_dir="${2:-$SYS_QPKG_DIR}"
+	local xz_ld_wrapper='lib/ld-2.19.so'
+	if [ x"$SYS_CPU_ARCH" == x"arm_64" ]; then
+		xz_ld_wrapper=''
+	fi
 	case "$archive" in
 		*.gz|*.bz2)
 			$CMD_TAR xvf "$archive" -C "$root_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list || handle_extract_error
 			;;
 		*.7z)
 			$CMD_7Z x -so "$archive" 2>/dev/null | $CMD_TAR xv -C "$root_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list || handle_extract_error
+			;;
+		*.xz)
+			$CMD_TAR xf "./xz.tgz"
+			LD_LIBRARY_PATH=${PWD}/lib $xz_ld_wrapper bin/xzcat "$archive" 2>/dev/null | $CMD_TAR xv -C "$root_dir" 2>/dev/null >>$SYS_QPKG_DIR/.list || handle_extract_error
 			;;
 		*)
 			handle_extract_error
@@ -722,9 +760,18 @@ set_qpkg_sys_app(){
 set_qpkg_rc_number(){
 	[ -z "$QPKG_RC_NUM" ] || set_qpkg_field $SYS_QPKG_CONF_FIELD_RC_NUMBER "$QPKG_RC_NUM"
 }
+set_qpkg_container(){
+	set_qpkg_field $SYS_QPKG_CONF_FIELD_CONTAINER "$QPKG_CONTAINER"
+}
+set_qpkg_exec_file(){
+	set_qpkg_field $SYS_QPKG_CONF_FIELD_EXEC_FILES "$QPKG_EXEC_FILES"
+}
 set_qpkg_desktop_app(){
 	if [ -n "$QPKG_DESKTOP_APP" ]; then
 		set_qpkg_field $SYS_QPKG_CONF_FIELD_DESKTOPAPP "$QPKG_DESKTOP_APP"
+	fi
+	if [ -n "$QPKG_DESKTOP" ]; then
+		set_qpkg_field $SYS_QPKG_CONF_FIELD_DESKTOPAPP "$QPKG_DESKTOP"
 	fi
 	if [ -n "$QPKG_DESKTOP_APP_WIN_WIDTH" ]; then
 		set_qpkg_field $SYS_QPKG_CONF_FIELD_DESKTOPAPP_WIN_WIDTH "$QPKG_DESKTOP_APP_WIN_WIDTH"
@@ -802,6 +849,8 @@ register_qpkg(){
 	set_qpkg_proxy_path
 	set_qpkg_timeout
 	set_qpkg_visible
+	set_qpkg_container
+	set_qpkg_exec_file
 	set_qpkg_fw_ver_min
 	set_qpkg_fw_ver_max
 }
@@ -1193,6 +1242,7 @@ create_uninstall_script(){
 # Stop the service before we begin the removal.
 if [ -x $SYS_INIT_DIR/$QPKG_SERVICE_PROGRAM ]; then
 	$SYS_INIT_DIR/$QPKG_SERVICE_PROGRAM stop
+	$SYS_INIT_DIR/$QPKG_SERVICE_PROGRAM remove
 	$CMD_SLEEP 5
 	$CMD_SYNC
 fi
@@ -1201,6 +1251,11 @@ fi
 $PKG_PRE_REMOVE
 
 # Remove QPKG directory, init-scripts, and icons.
+if which rsync >/dev/null 2>&1; then
+	$CMD_MKDIR -p /tmp/qpkg_blankdir
+	rsync -a --delete /tmp/qpkg_blankdir "$SYS_QPKG_DIR"
+	$CMD_RM -fr "$SYS_QPKG_DIR"
+fi
 $CMD_RM -fr "$SYS_QPKG_DIR"
 $CMD_RM -f "$SYS_INIT_DIR/$QPKG_SERVICE_PROGRAM"
 $CMD_FIND $SYS_STARTUP_DIR -type l -name 'QS*${QPKG_NAME}' | $CMD_XARGS $CMD_RM -f
@@ -1336,6 +1391,8 @@ main(){
 		SYS_QPKG_DATA_FILE=$SYS_QPKG_DATA_FILE_BZIP2
 	elif [ -f $SYS_QPKG_DATA_FILE_7ZIP ]; then
 		SYS_QPKG_DATA_FILE=$SYS_QPKG_DATA_FILE_7ZIP
+	elif [ -f $SYS_QPKG_DATA_FILE_XZ ]; then
+		SYS_QPKG_DATA_FILE=$SYS_QPKG_DATA_FILE_XZ
 	else
 		if [ -x "/usr/local/sbin/notify" ]; then
 			/usr/local/sbin/notify send -A A039 -C C001 -M 34 -l error -t 3 "[{0}] {1} install failed due to cannot find the data file." "$PREFIX" "$QPKG_DISPLAY_NAME"
@@ -1374,7 +1431,6 @@ main(){
 	if [ $SYS_DELAY_ANTITAMPER_POST = 1 ]; then
 		codesigning_postinstall 0
 	fi
-
 	##system pop up log after QPKG has installed and app was enable
 
 	if is_qpkg_enabled "$QPKG_NAME"; then

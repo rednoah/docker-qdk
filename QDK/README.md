@@ -3,7 +3,7 @@ The project is fork qnap SDK 2.2.4
 
 # QDK Download Link:
 
-https://download.qnap.com/QPKG/QDK/QDK_2.3.10.zip
+https://github.com/qnap-dev/QDK/releases/download/v2.3.11/QDK_2.3.11.zip
 
 # QPKG Development Guidelines
 ----------------------------------
@@ -39,21 +39,30 @@ https://github.com/fcwu/docker-qdk2
 
 https://github.com/qeek-dev/create-dpkg
 
-# How to install QDK in Ubuntu
+# How to install QDK on Ubuntu
 
 ```
 sudo ./InstallToUbuntu.sh install
 ```
 
-https://github.com/qnap-dev/qdk2/releases/download/v0.24/qdk2_0.24.trusty_amd64.deb
+https://github.com/qnap-dev/qdk2/releases/download/v0.30/qdk2_0.30.trusty_amd64.deb
 
-https://github.com/qnap-dev/qdk2/releases/download/v0.24/qdk2_0.24.xenial_amd64.deb
+https://github.com/qnap-dev/qdk2/releases/download/v0.30/qdk2_0.30.xenial_amd64.deb
+
+https://github.com/qnap-dev/qdk2/releases/download/v0.30/qdk2_0.30.bionic_amd64.deb
 
 # QDK Quick Start Guide
 
-https://www.gitbook.com/book/edhongcy/qdk-quick-start-guide/details
+https://cheng-yuan-hong.gitbook.io/qdk-quick-start-guide/
 
 # Update new feature
+
+2.3.11
+
+    -Force to use codesigning.qnap.com:5001 instead of 172.17.21.68:5000
+    -Add preliminary support for newer code signing mechanism for 3rd party qpkg
+    -Fix one minor bug while handling anti-tampering error
+    -Fix qpkg install failed keep file in nas
 
 2.3.10
 
