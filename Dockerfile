@@ -1,6 +1,6 @@
 FROM ubuntu:18.04
 
-MAINTAINER Reinhard Pointner <rednoah@filebot.net>
+LABEL maintainer="Reinhard Pointner <rednoah@filebot.net>"
 
 
 ENV LANG C.UTF-8
@@ -20,7 +20,6 @@ RUN cd /usr/local/QDK/src && make \
  && ln -s /usr/local/QDK/shared/bin/qpkg_encrypt /usr/bin/qpkg_encrypt
 
 
-VOLUME /src
 WORKDIR /src
 
 
