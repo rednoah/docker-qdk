@@ -8,8 +8,8 @@ Docker image for [QNAP Development Kit](https://github.com/qnap-dev/QDK).
 
 The [`qbuild`](https://github.com/qnap-dev/QDK) command-line tool:
 
-```
-docker run --rm -v $PWD:/src rednoah/qpkg-build --7zip
+```sh
+docker run --rm -v "$PWD:/src" rednoah/qpkg-build --7zip
 ```
 
 
