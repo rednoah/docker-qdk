@@ -2,7 +2,8 @@ name: Build Docker
 
 on:
   push:
-    branches: [ master ]
+    paths:
+      - 'Dockerfile'
 
 jobs:
   docker:
