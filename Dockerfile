@@ -11,7 +11,8 @@ RUN apt-get update \
 
 
 COPY QDK /usr/local/QDK
-COPY qdk.conf /etc/config/qdk.conf
+COPY etc /etc
+COPY opt /opt
 
 
 RUN cd /usr/local/QDK/src && make \
@@ -23,4 +24,4 @@ RUN cd /usr/local/QDK/src && make \
 WORKDIR /src
 
 
-ENTRYPOINT ["qbuild"]
+ENTRYPOINT ["/opt/bin/run"]

@@ -1,4 +1,4 @@
-include *.conf
+include etc/config/qdk.conf
 
 
 build:
@@ -11,9 +11,10 @@ extract:
 	docker run -v $(PWD)/qpkg:/src --rm docker-qdk --extract '*.qpkg'
 
 example: build
-	rm -rv example
-	docker run -v $(PWD):/src --rm docker-qdk --create-env example
-	docker run -v $(PWD)/example:/src --rm docker-qdk .
+	rm -rvf tmp
+	mkdir tmp
+	docker run -v $(PWD)/tmp:/src --rm docker-qdk --create-env example
+	docker run -v $(PWD)/tmp/example:/src --rm docker-qdk
 
 pull:
 	curl -o QDK.tar.gz -L "https://github.com/qnap-dev/QDK/archive/refs/tags/v${QDK_VERSION}.tar.gz"

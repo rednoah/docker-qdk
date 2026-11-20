@@ -1,0 +1,15 @@
+#!/bin/sh
+SRC_DIR="$PWD"
+TMP_DIR=$(mktemp -d)
+
+
+# perform all work on a native Linux file system
+cp -purf "$SRC_DIR"/* "$TMP_DIR"
+publish() {
+	cp -vpurf "$TMP_DIR"/* "$SRC_DIR"
+}
+trap publish EXIT
+
+
+cd "$TMP_DIR"
+qbuild "$@"
